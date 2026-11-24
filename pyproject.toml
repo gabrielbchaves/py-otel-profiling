@@ -1,7 +1,7 @@
 [project]
 name = "otel-profiling"
 version = "0.1.0"
-description = "Continuous in-process CPU profiler for Python that exports OpenTelemetry (OTLP) profiles"
+description = "Continuous in-process CPU and wall-clock profiler for Python that exports OpenTelemetry (OTLP) profiles"
 readme = "README.md"
 authors = [
     { name = "Gabriel Chaves", email = "gabriel.chaves@olist.com" }

@@ -73,7 +73,7 @@ def test_build_request() -> None:
     profiler = _profiler()
     stack = (("app.py", "work", 5), ("app.py", "main", 1))
 
-    request = profiler.build_request(Counter({stack: 3}), start=1_000, end=2_000)
+    request = profiler.build_request({"cpu": Counter({stack: 3})}, start=1_000, end=2_000)
 
     strings = request.dictionary.string_table
     profile = request.resource_profiles[0].scope_profiles[0].profiles[0]
@@ -92,7 +92,7 @@ def test_build_request() -> None:
 
 def test_export_sends_protobuf(collector: OTLPCollector) -> None:
     """Exports are POSTed as protobuf with the configured headers."""
-    _profiler(collector.endpoint).export(Counter({(("app.py", "work", 5),): 1}), start=0, end=1)
+    _profiler(collector.endpoint).export({"cpu": Counter({(("app.py", "work", 5),): 1})}, start=0, end=1)
 
     headers, _ = collector.requests[0]
     assert headers["Content-Type"] == "application/x-protobuf"
@@ -102,13 +102,37 @@ def test_export_sends_protobuf(collector: OTLPCollector) -> None:
 
 def test_export_skips_empty_window(collector: OTLPCollector) -> None:
     """Nothing is sent when no samples were collected."""
-    _profiler(collector.endpoint).export(Counter(), start=0, end=1)
+    _profiler(collector.endpoint).export({"cpu": Counter(), "wall": Counter()}, start=0, end=1)
 
     assert collector.requests == []
 
 
 def test_export_failure_is_logged(caplog) -> None:
     """Export errors are logged instead of raised."""
-    _profiler().export(Counter({(("app.py", "work", 5),): 1}), start=0, end=1)
+    _profiler().export({"cpu": Counter({(("app.py", "work", 5),): 1})}, start=0, end=1)
 
     assert "Profiler export failed" in caplog.text
+
+
+def test_build_request_one_profile_per_type() -> None:
+    """Each profile type with samples becomes its own profile sharing the dictionary."""
+    stack = (("app.py", "work", 5),)
+    request = _profiler().build_request(
+        {"cpu": Counter({stack: 1}), "wall": Counter({stack: 4})}, start=0, end=1
+    )
+
+    strings = request.dictionary.string_table
+    profiles = request.resource_profiles[0].scope_profiles[0].profiles
+    by_type = {strings[profile.sample_type.type_strindex]: profile for profile in profiles}
+    assert list(by_type["cpu"].samples[0].values) == [10_000_000]
+    assert list(by_type["wall"].samples[0].values) == [40_000_000]
+    assert by_type["cpu"].samples[0].stack_index == by_type["wall"].samples[0].stack_index
+
+
+def test_build_request_skips_empty_types() -> None:
+    """Profile types without samples in the window are left out."""
+    request = _profiler().build_request(
+        {"cpu": Counter(), "wall": Counter({(("app.py", "wait", 1),): 1})}, start=0, end=1
+    )
+
+    assert len(request.resource_profiles[0].scope_profiles[0].profiles) == 1

@@ -11,7 +11,7 @@ from profiling.sampling.constants import (
     THREAD_STATUS_HAS_GIL,
     THREAD_STATUS_ON_CPU,
 )
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from opentelemetry.instrumentation.utils import suppress_instrumentation
 from opentelemetry.proto.collector.profiles.v1development.profiles_service_pb2 import (
@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 type Frame = tuple[str, str, int]
 type StackKey = tuple[Frame, ...]
+type ProfileType = Literal["cpu", "wall"]
+type Samples = dict[ProfileType, Counter[StackKey]]
+
+PROFILE_TYPES: tuple[ProfileType, ...] = ("cpu", "wall")
 
 _SCOPE_NAME = "otel_profiling"
 _NANOS_PER_SECOND = 1_000_000_000
@@ -97,11 +101,14 @@ class _Dictionary:
 
 
 class Profiler:
-    """Continuous in-process CPU profiler exporting OTLP profiles.
+    """Continuous in-process profiler exporting OTLP profiles.
 
-    Samples the stacks of every thread running on CPU through CPython's remote
-    debugging API and periodically exports the aggregated samples as an OTLP
-    ``ExportProfilesServiceRequest`` over HTTP/protobuf.
+    Samples the stacks of every thread through CPython's remote debugging API and
+    periodically exports the aggregated samples as an OTLP ``ExportProfilesServiceRequest``
+    over HTTP/protobuf, with one profile per enabled type:
+
+    - ``cpu``: threads running Python code or native code on CPU.
+    - ``wall``: every thread with a Python stack, including those blocked on I/O or locks.
     """
 
     def __init__(
@@ -111,8 +118,10 @@ class Profiler:
         headers: Mapping[str, str],
         interval: float,
         export_interval: float,
+        profile_types: tuple[ProfileType, ...] = PROFILE_TYPES,
     ) -> None:
         self.resource = resource
+        self.profile_types = profile_types
         self.endpoint = endpoint
         self.headers = {**headers, "Content-Type": "application/x-protobuf"}
         self.interval = interval
@@ -143,7 +152,7 @@ class Profiler:
             cache_frames=True,
         )
         own_thread = threading.get_native_id()
-        samples: Counter[StackKey] = Counter()
+        samples = self._new_samples()
         window_start = time.time_ns()
 
         while not self._stop.wait(self.interval):
@@ -155,14 +164,17 @@ class Profiler:
             now = time.time_ns()
             if now - window_start >= self.export_interval * _NANOS_PER_SECOND:
                 self.export(samples, window_start, now)
-                samples = Counter()
+                samples = self._new_samples()
                 window_start = now
 
         self.export(samples, window_start, time.time_ns())
 
-    def export(self, samples: Counter[StackKey], start: int, end: int) -> None:
+    def _new_samples(self) -> Samples:
+        return {profile_type: Counter() for profile_type in self.profile_types}
+
+    def export(self, samples: Samples, start: int, end: int) -> None:
         """Send the aggregated samples of a time window, logging failures instead of raising."""
-        if not samples:
+        if not any(samples.values()):
             return
 
         try:
@@ -175,31 +187,38 @@ class Profiler:
         except Exception:
             logger.warning("Profiler export failed", exc_info=True)
 
-    def build_request(self, samples: Counter[StackKey], start: int, end: int) -> ExportProfilesServiceRequest:
+    def build_request(self, samples: Samples, start: int, end: int) -> ExportProfilesServiceRequest:
         """Build the OTLP export request for the samples collected between ``start`` and ``end``."""
         dictionary = _Dictionary()
         period = int(self.interval * _NANOS_PER_SECOND)
-        cpu_nanoseconds = ValueType(
-            type_strindex=dictionary.string("cpu"), unit_strindex=dictionary.string("nanoseconds")
-        )
-        profile = Profile(
-            sample_type=cpu_nanoseconds,
-            period_type=cpu_nanoseconds,
-            period=period,
-            time_unix_nano=start,
-            duration_nano=end - start,
-            profile_id=os.urandom(16),
-            samples=[
-                Sample(stack_index=dictionary.stack(key), values=[count * period])
-                for key, count in samples.items()
-            ],
-        )
+        profiles = [
+            Profile(
+                sample_type=ValueType(
+                    type_strindex=dictionary.string(profile_type),
+                    unit_strindex=dictionary.string("nanoseconds"),
+                ),
+                period_type=ValueType(
+                    type_strindex=dictionary.string(profile_type),
+                    unit_strindex=dictionary.string("nanoseconds"),
+                ),
+                period=period,
+                time_unix_nano=start,
+                duration_nano=end - start,
+                profile_id=os.urandom(16),
+                samples=[
+                    Sample(stack_index=dictionary.stack(key), values=[count * period])
+                    for key, count in counter.items()
+                ],
+            )
+            for profile_type, counter in samples.items()
+            if counter
+        ]
         return ExportProfilesServiceRequest(
             resource_profiles=[
                 ResourceProfiles(
                     resource=self.resource,
                     scope_profiles=[
-                        ScopeProfiles(scope=InstrumentationScope(name=_SCOPE_NAME), profiles=[profile]),
+                        ScopeProfiles(scope=InstrumentationScope(name=_SCOPE_NAME), profiles=profiles),
                     ],
                 ),
             ],
@@ -207,13 +226,19 @@ class Profiler:
         )
 
 
-def _sample(unwinder: _remote_debugging.RemoteUnwinder, own_thread: int, samples: Counter[StackKey]) -> None:
+def _sample(unwinder: _remote_debugging.RemoteUnwinder, own_thread: int, samples: Samples) -> None:
+    cpu, wall = samples.get("cpu"), samples.get("wall")
     for interpreter in unwinder.get_stack_trace():
         for thread in interpreter.threads:
-            if thread.thread_id == own_thread or not thread.status & _RUNNING or not thread.frame_info:
+            if thread.thread_id == own_thread or not thread.frame_info:
                 continue
 
-            samples[tuple(_frame(frame) for frame in thread.frame_info)] += 1
+            key = tuple(_frame(frame) for frame in thread.frame_info)
+            if wall is not None:
+                wall[key] += 1
+
+            if cpu is not None and thread.status & _RUNNING:
+                cpu[key] += 1
 
 
 def _frame(frame: _remote_debugging.FrameInfo | tuple[object, ...]) -> Frame:

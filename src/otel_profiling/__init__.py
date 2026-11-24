@@ -1,4 +1,4 @@
-"""Continuous in-process CPU profiler that exports OpenTelemetry (OTLP) profiles."""
+"""Continuous in-process CPU and wall-clock profiler that exports OpenTelemetry (OTLP) profiles."""
 
 from otel_profiling.instrumentor import ProfilingInstrumentor
 

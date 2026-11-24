@@ -34,3 +34,11 @@ OTEL_PYTHON_PROFILING_EXPORT_INTERVAL = "OTEL_PYTHON_PROFILING_EXPORT_INTERVAL"
 
 Milliseconds between profile exports. Default: ``10000``.
 """
+
+OTEL_PYTHON_PROFILING_TYPES = "OTEL_PYTHON_PROFILING_TYPES"
+"""
+.. envvar:: OTEL_PYTHON_PROFILING_TYPES
+
+Comma-separated profile types to collect: ``cpu`` (threads running on CPU) and/or ``wall``
+(every thread, including those blocked on I/O or locks). Default: ``cpu,wall``.
+"""

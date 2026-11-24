@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 import weakref
 from typing import TYPE_CHECKING, Any, override
@@ -13,17 +14,20 @@ from otel_profiling.environment_variables import (
     OTEL_PROFILES_EXPORTER,
     OTEL_PYTHON_PROFILING_EXPORT_INTERVAL,
     OTEL_PYTHON_PROFILING_SAMPLE_INTERVAL,
+    OTEL_PYTHON_PROFILING_TYPES,
 )
-from otel_profiling.profiler import Profiler, to_proto_resource
+from otel_profiling.profiler import PROFILE_TYPES, Profiler, ProfileType, to_proto_resource
 
 if TYPE_CHECKING:
     from collections.abc import Collection
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://localhost:4318"
 
 
 class ProfilingInstrumentor(BaseInstrumentor):  # type: ignore[misc]
-    """OpenTelemetry instrumentor that runs a continuous CPU profiler exporting OTLP profiles.
+    """OpenTelemetry instrumentor that runs a continuous profiler exporting OTLP profiles.
 
     Enabled only when ``OTEL_PROFILES_EXPORTER=otlp``. Keyword arguments to ``instrument()``
     take precedence over environment variables:
@@ -34,6 +38,8 @@ class ProfilingInstrumentor(BaseInstrumentor):  # type: ignore[misc]
       ``OTEL_EXPORTER_OTLP_*``.
     - ``sample_interval_millis``: default ``OTEL_PYTHON_PROFILING_SAMPLE_INTERVAL`` or ``10``.
     - ``export_interval_millis``: default ``OTEL_PYTHON_PROFILING_EXPORT_INTERVAL`` or ``10000``.
+    - ``profile_types``: profile types to collect (``cpu``, ``wall``); default
+      ``OTEL_PYTHON_PROFILING_TYPES`` or both.
 
     The profiler is restarted in forked children and flushed at interpreter exit.
     """
@@ -52,7 +58,8 @@ class ProfilingInstrumentor(BaseInstrumentor):  # type: ignore[misc]
 
     @override
     def _instrument(self, **kwargs: Any) -> None:
-        if os.environ.get(OTEL_PROFILES_EXPORTER) != "otlp":
+        profile_types = _profile_types(kwargs.get("profile_types"))
+        if os.environ.get(OTEL_PROFILES_EXPORTER) != "otlp" or not profile_types:
             return
 
         tracer_provider = kwargs.get("tracer_provider") or trace.get_tracer_provider()
@@ -67,6 +74,7 @@ class ProfilingInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             "export_interval": _millis(
                 kwargs.get("export_interval_millis"), OTEL_PYTHON_PROFILING_EXPORT_INTERVAL, 10000
             ),
+            "profile_types": profile_types,
         }
         self._start()
         atexit.register(self._stop)
@@ -113,3 +121,16 @@ def _headers() -> dict[str, str]:
 
 def _millis(value: int | None, env_var: str, default: int) -> float:
     return int(value or os.environ.get(env_var) or default) / 1000
+
+
+def _profile_types(value: Collection[str] | None) -> tuple[ProfileType, ...]:
+    if value is None:
+        raw = os.environ.get(OTEL_PYTHON_PROFILING_TYPES)
+        value = raw.split(",") if raw else PROFILE_TYPES
+
+    requested = {item.strip().lower() for item in value}
+    unknown = requested - set(PROFILE_TYPES)
+    if unknown:
+        logger.warning("Ignoring unknown profile types: %s", ", ".join(sorted(unknown)))
+
+    return tuple(profile_type for profile_type in PROFILE_TYPES if profile_type in requested)
