@@ -42,3 +42,20 @@ OTEL_PYTHON_PROFILING_TYPES = "OTEL_PYTHON_PROFILING_TYPES"
 Comma-separated profile types to collect: ``cpu`` (threads running on CPU) and/or ``wall``
 (every thread, including those blocked on I/O or locks). Default: ``cpu,wall``.
 """
+
+OTEL_PYTHON_PROFILING_SPAN_LINKS = "OTEL_PYTHON_PROFILING_SPAN_LINKS"
+"""
+.. envvar:: OTEL_PYTHON_PROFILING_SPAN_LINKS
+
+Whether to link each sample to the span active on its thread or asyncio task (``trace_id`` /
+``span_id``). Requires an SDK tracer provider. Default: ``true``.
+"""
+
+OTEL_PYTHON_PROFILING_MODE = "OTEL_PYTHON_PROFILING_MODE"
+"""
+.. envvar:: OTEL_PYTHON_PROFILING_MODE
+
+Where samples are taken: ``process`` (default) starts a child interpreter that reads this
+process' memory without competing for its GIL; ``thread`` samples from a background thread.
+``process`` falls back to ``thread`` when the child can't read this process' memory.
+"""

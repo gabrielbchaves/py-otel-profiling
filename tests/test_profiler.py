@@ -2,6 +2,7 @@ import _remote_debugging
 import os
 from collections import Counter
 
+import pytest
 from opentelemetry.proto.resource.v1.resource_pb2 import Resource
 
 from otel_profiling.profiler import Profiler, _Dictionary, _frame, to_proto_resource
@@ -69,11 +70,11 @@ def test_to_proto_resource_keeps_value_types() -> None:
 
 
 def test_build_request() -> None:
-    """Samples are weighted by the sampling period and resolved through the shared dictionary."""
+    """Sample values are kept and stacks are resolved through the shared dictionary."""
     profiler = _profiler()
     stack = (("app.py", "work", 5), ("app.py", "main", 1))
 
-    request = profiler.build_request({"cpu": Counter({stack: 3})}, start=1_000, end=2_000)
+    request = profiler.build_request({"cpu": Counter({(stack, None): 30_000_000})}, start=1_000, end=2_000)
 
     strings = request.dictionary.string_table
     profile = request.resource_profiles[0].scope_profiles[0].profiles[0]
@@ -87,12 +88,15 @@ def test_build_request() -> None:
     assert profile.period == 10_000_000
     assert profile.duration_nano == 1_000
     assert list(sample.values) == [30_000_000]
+    assert sample.link_index == 0
     assert strings[request.dictionary.function_table[leaf.lines[0].function_index].name_strindex] == "work"
 
 
 def test_export_sends_protobuf(collector: OTLPCollector) -> None:
     """Exports are POSTed as protobuf with the configured headers."""
-    _profiler(collector.endpoint).export({"cpu": Counter({(("app.py", "work", 5),): 1})}, start=0, end=1)
+    _profiler(collector.endpoint).export(
+        {"cpu": Counter({((("app.py", "work", 5),), None): 1})}, start=0, end=1
+    )
 
     headers, _ = collector.requests[0]
     assert headers["Content-Type"] == "application/x-protobuf"
@@ -109,7 +113,7 @@ def test_export_skips_empty_window(collector: OTLPCollector) -> None:
 
 def test_export_failure_is_logged(caplog) -> None:
     """Export errors are logged instead of raised."""
-    _profiler().export({"cpu": Counter({(("app.py", "work", 5),): 1})}, start=0, end=1)
+    _profiler().export({"cpu": Counter({((("app.py", "work", 5),), None): 1})}, start=0, end=1)
 
     assert "Profiler export failed" in caplog.text
 
@@ -118,7 +122,9 @@ def test_build_request_one_profile_per_type() -> None:
     """Each profile type with samples becomes its own profile sharing the dictionary."""
     stack = (("app.py", "work", 5),)
     request = _profiler().build_request(
-        {"cpu": Counter({stack: 1}), "wall": Counter({stack: 4})}, start=0, end=1
+        {"cpu": Counter({(stack, None): 10_000_000}), "wall": Counter({(stack, None): 40_000_000})},
+        start=0,
+        end=1,
     )
 
     strings = request.dictionary.string_table
@@ -132,7 +138,33 @@ def test_build_request_one_profile_per_type() -> None:
 def test_build_request_skips_empty_types() -> None:
     """Profile types without samples in the window are left out."""
     request = _profiler().build_request(
-        {"cpu": Counter(), "wall": Counter({(("app.py", "wait", 1),): 1})}, start=0, end=1
+        {"cpu": Counter(), "wall": Counter({((("app.py", "wait", 1),), None): 1})}, start=0, end=1
     )
 
     assert len(request.resource_profiles[0].scope_profiles[0].profiles) == 1
+
+
+def test_build_request_links_samples_to_spans() -> None:
+    """Samples carry a link to their span, and the same stack in different spans stays separate."""
+    stack = (("app.py", "work", 5),)
+    first, second = (0xABC, 0x1), (0xABC, 0x2)
+    request = _profiler().build_request(
+        {"wall": Counter({(stack, first): 10, (stack, second): 20, (stack, None): 30})}, start=0, end=1
+    )
+
+    links = request.dictionary.link_table
+    samples = request.resource_profiles[0].scope_profiles[0].profiles[0].samples
+    by_link = {
+        (int.from_bytes(links[s.link_index].trace_id), int.from_bytes(links[s.link_index].span_id)): s.values[
+            0
+        ]
+        for s in samples
+    }
+    assert by_link == {first: 10, second: 20, (0, 0): 30}
+    assert all(len(link.trace_id) == 16 and len(link.span_id) == 8 for link in links[1:])
+
+
+def test_frame_rejects_corrupted_strings() -> None:
+    """Frames read while the target was changing them can hold invalid strings and are rejected."""
+    with pytest.raises(UnicodeEncodeError):
+        _frame(("app.py", (1, 1, 0, 0), "broken\ud87d", None))
