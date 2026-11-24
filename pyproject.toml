@@ -1,0 +1,83 @@
+[project]
+name = "otel-profiling"
+version = "0.1.0"
+description = "Continuous in-process CPU and wall-clock profiler for Python that exports OpenTelemetry (OTLP) profiles"
+readme = "README.md"
+authors = [
+    { name = "Gabriel Chaves", email = "gabriel.chaves@olist.com" }
+]
+requires-python = ">=3.15"
+dependencies = [
+    "opentelemetry-api>=1.45.0",
+    "opentelemetry-instrumentation>=0.66b0",
+    "opentelemetry-proto>=1.45.0",
+]
+
+[project.entry-points.opentelemetry_instrumentor]
+profiling = "otel_profiling:ProfilingInstrumentor"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "opentelemetry-sdk>=1.45.0",
+    "pre-commit>=4.0.0",
+    "pytest>=9.0.2",
+    "pytest-cov>=7.0.0",
+    "types-protobuf>=6.30.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "otel_profiling"
+
+[tool.mypy]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["profiling.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--cov --cov-report=term-missing"
+
+[tool.ruff]
+target-version = "py315"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+  # annotations — mypy strict mode already covers this
+  "ANN",
+  # docstrings — not enforced in this project
+  "D100", "D107",
+  # pydoclint — redundant with mypy
+  "DOC",
+  # pandas / numpy / airflow / fastapi — not used
+  "PD", "NPY", "AIR", "FAST",
+  # conflicts with ruff formatter
+  "COM812", "ISC001",
+  # no copyright headers in this project
+  "CPY001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "S101",    # assert allowed in tests
+  "ARG",     # unused arguments (fixtures)
+  "SLF001",  # private member access in tests
+  "PLR2004", # magic values in tests
+  "TC",      # imports used only for annotations
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["otel_profiling"]
+
+[tool.ruff.lint.pylint]
+max-args = 8
+
+[tool.coverage.run]
+source = ["src/otel_profiling"]
