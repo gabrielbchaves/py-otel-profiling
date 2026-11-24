@@ -55,10 +55,13 @@ def collector() -> Generator[OTLPCollector]:
     otlp.server.shutdown()
 
 
-@pytest.fixture
-def instrumentor(monkeypatch: pytest.MonkeyPatch) -> Generator[ProfilingInstrumentor]:
-    """Profiling instrumentor with the OTLP exporter enabled, uninstrumented after the test."""
+@pytest.fixture(params=["process", "thread"])
+def instrumentor(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Generator[ProfilingInstrumentor]:
+    """Profiling instrumentor with the OTLP exporter enabled in each mode, uninstrumented after the test."""
     monkeypatch.setenv("OTEL_PROFILES_EXPORTER", "otlp")
+    monkeypatch.setenv("OTEL_PYTHON_PROFILING_MODE", request.param)
     instance = ProfilingInstrumentor()
     yield instance
     instance.uninstrument()

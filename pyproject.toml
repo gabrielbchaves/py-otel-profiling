@@ -1,7 +1,7 @@
 [project]
 name = "otel-profiling"
-version = "0.1.0"
-description = "Continuous in-process CPU and wall-clock profiler for Python that exports OpenTelemetry (OTLP) profiles"
+version = "0.2.0"
+description = "Continuous CPU and wall-clock profiler for Python that exports OpenTelemetry (OTLP) profiles linked to traces"
 readme = "README.md"
 authors = [
     { name = "Gabriel Chaves", email = "gabriel.chaves@olist.com" }
@@ -77,7 +77,7 @@ ignore = [
 known-first-party = ["otel_profiling"]
 
 [tool.ruff.lint.pylint]
-max-args = 8
+max-args = 10
 
 [tool.coverage.run]
 source = ["src/otel_profiling"]
